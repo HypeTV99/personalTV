@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Your Name — Portfolio</title>
+  <meta name="description" content="Light 3D MacBook-desk portfolio. Original work with placeholder content." />
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="./styles.css" />
+  <script src="./site.config.js"></script>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="stage"></div>
+
+  <!-- 1 · Start gate -->
+  <div id="gate">
+    <div class="gate-box">
+      <div class="gate-title" id="gateTitle">Your Name Portfolio Showcase</div>
+      <div class="gate-sub">Click start to begin</div>
+      <div class="gate-foot"><button id="startBtn">START</button></div>
+    </div>
+  </div>
+
+  <!-- 2 · Wide-shot prompt -->
+  <div id="beginPill" class="hidden"><span id="beginText"></span><span class="blink">_</span></div>
+
+  <!-- 3 · Desk HUD -->
+  <div id="hud">
+    <div class="hud-tl">
+      <div class="pill" id="hudName">Your Name</div>
+      <div class="pill" id="hudRole">Site Reliability Engineer</div>
+      <div class="hud-row">
+        <div class="pill" id="hudClock">12:00:00 AM</div>
+        <button class="pill pill-btn" id="btnMac">MAC OS</button>
+        <button class="pill pill-btn" id="btnCam">RESET</button>
+        <button class="pill pill-btn" id="btnRotate">ROTATE</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 4 · macOS overlay (light mode) -->
+  <div id="macos" class="hidden">
+    <div class="mac-wall">
+      <div class="mac-menu">
+        <div class="mac-menu-l">
+          <span class="mac-logo">●</span>
+          <b id="macOwner">Your Name</b>
+          <span class="mac-menu-item">File</span><span class="mac-menu-item">Edit</span>
+          <span class="mac-menu-item">View</span><span class="mac-menu-item">Go</span>
+          <span class="mac-menu-item">Window</span><span class="mac-menu-item">Help</span>
+        </div>
+        <div class="mac-menu-r">
+          <span id="macClock">Tue Sep 9&nbsp;&nbsp;09:41</span>
+          <button class="mac-desk-btn" id="macExit" title="Back to desk">⤺ Desk</button>
+        </div>
+      </div>
+
+      <div class="mac-desktop" id="macDesktop">
+        <div class="mac-icons" id="macIcons"></div>
+        <div class="finder" id="finder">
+          <div class="fin-title" id="finTitle">
+            <span class="dot r" id="finClose"></span><span class="dot y"></span><span class="dot g"></span>
+            <span class="fin-name" id="finName">about — Finder</span>
+          </div>
+          <div class="fin-body">
+            <div class="fin-side" id="finSide"></div>
+            <div class="fin-main" id="finMain"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="mac-dock" id="macDock"></div>
+      <button id="macBack">✕ Back to desk</button>
+    </div>
+  </div>
+
+  <div id="tooltip"></div>
+
+  <script type="module" src="./main.js"></script>
+</body>
+</html>

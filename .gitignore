@@ -1,0 +1,8 @@
+# local recordings / large media, not site assets
+*.mp4
+*.mov
+*.mkv
+
+# OS junk
+.DS_Store
+Thumbs.db
