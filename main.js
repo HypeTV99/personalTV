@@ -3,6 +3,8 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 
+import { buildRealisticScene } from "./realistic-scene.js";
+
 const SITE = window.SITE || {};
 const $ = (id) => document.getElementById(id);
 function esc(s) {
@@ -181,23 +183,16 @@ function openMacOS(tab = macTab) {
     mz.classList.remove("hidden");
     void mz.offsetWidth;
     mz.classList.add("in");
-    mz.classList.add("busy");
-    setTimeout(() => mz.classList.remove("busy"), 650);
     const fin = $("finder");
     fin.style.display = "flex";
     popFinder(window.innerWidth / 2, window.innerHeight - 140);
     renderMac();
   };
-  /* Cinematic dolly into the screen; HUD stays until arrival */
-  flying = true;
+  /* Open the real interface immediately; keep the canvas preview on the desk. */
   controls.enabled = false;
   controls.autoRotate = false;
   tooltip.style.display = "none";
-  if (!screenMeshRef) { showOverlay(); flying = false; return; }
-  const sp = new THREE.Vector3();
-  screenMeshRef.getWorldPosition(sp);
-  const n = new THREE.Vector3(0, 0, 1).applyQuaternion(screenMeshRef.getWorldQuaternion(new THREE.Quaternion()));
-  flyTo(sp.clone().addScaledVector(n, 0.85), sp, 1.6, () => { showOverlay(); flying = false; });
+  showOverlay();
 }
 function closeMacOS() {
   const mz = $("macos");
@@ -276,6 +271,7 @@ $("startBtn").addEventListener("click", () => {
 });
 window.addEventListener("pointerup", (e) => {
   if (stage !== "wide") return;
+  if (pointerDragged) return;
   if (e.target.closest("#gate, #hud, #macos, button")) return;
   stage = "desk";
   const pill = $("beginPill");
@@ -331,6 +327,9 @@ camera.position.copy(WIDE_POS);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.target.copy(WIDE_TGT);
 controls.enableDamping = true;
+controls.enableRotate = true;
+controls.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
+controls.mouseButtons.RIGHT = THREE.MOUSE.PAN;
 controls.dampingFactor = 0.06;
 controls.minDistance = 1.2;
 controls.maxDistance = 16;
@@ -339,12 +338,16 @@ controls.autoRotate = true;
 controls.autoRotateSpeed = 0.55;
 let idleTimer = null;
 controls.addEventListener("start", () => {
+  // Manual input takes ownership from a reset/entry camera animation.
+  if (camTween) cancelFlight();
   controls.autoRotate = false;
   if (idleTimer) clearTimeout(idleTimer);
 });
 controls.addEventListener("end", () => {
   if (idleTimer) clearTimeout(idleTimer);
-  idleTimer = setTimeout(() => { if (rotatePref) controls.autoRotate = true; }, 4000);
+  idleTimer = setTimeout(() => {
+    if (rotatePref && controls.enabled && !flying && $("macos").classList.contains("hidden")) controls.autoRotate = true;
+  }, 4000);
 });
 
 /* Lights */
@@ -353,7 +356,7 @@ scene.add(new THREE.AmbientLight(0xffffff, 0.15));
 const sun = new THREE.DirectionalLight(0xffffff, 2.0);
 sun.position.set(5, 8, 4);
 sun.castShadow = true;
-sun.shadow.mapSize.set(1024, 1024);
+sun.shadow.mapSize.set(2048, 2048);
 sun.shadow.camera.left = -7; sun.shadow.camera.right = 7;
 sun.shadow.camera.top = 7; sun.shadow.camera.bottom = -7;
 sun.shadow.camera.far = 25;
@@ -395,24 +398,8 @@ function mesh(geo, mat, x = 0, y = 0, z = 0, parent = scene) {
 }
 const box = (w, h, d, mat, x, y, z, parent) => mesh(new THREE.BoxGeometry(w, h, d), mat, x, y, z, parent);
 
-/* Floor */
-{
-  const floor = new THREE.Mesh(new THREE.CircleGeometry(20, 64), M.floor);
-  floor.rotation.x = -Math.PI / 2;
-  floor.receiveShadow = true;
-  scene.add(floor);
-}
-
-/* Desk + drawer unit */
 const TOP = 1.0;
-box(3.1, 0.1, 1.45, M.deskTop, 0, 0.95, 0);
-[[-1.42, -0.6], [1.42, -0.6], [-1.42, 0.6], [1.42, 0.6]].forEach(([x, z]) =>
-  box(0.09, 0.9, 0.09, M.metal, x, 0.45, z));
-box(0.66, 0.6, 1.0, M.drawer, -1.05, 0.6, 0);
-box(0.58, 0.23, 0.02, M.drawer, -1.05, 0.72, 0.5);
-box(0.58, 0.23, 0.02, M.drawer, -1.05, 0.46, 0.5);
-box(0.2, 0.03, 0.03, M.dark, -1.05, 0.72, 0.52);
-box(0.2, 0.03, 0.03, M.dark, -1.05, 0.46, 0.52);
+const updateAtmosphere = buildRealisticScene(scene, TOP, renderer);
 
 /* ── Canvas helpers ─────────────────────────────────────────── */
 function rr(g, x, y, w, h, r) {
@@ -640,7 +627,7 @@ function buildProceduralMacBook() {
 const base = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.06, 1.0), M.alu);
 base.position.set(0, TOP + 0.03, 0.12);
 base.castShadow = true; base.receiveShadow = true;
-base.userData = { action: "theme", label: "click ▸ change wallpaper" };
+base.userData = { action: "macbook", label: "open ▸ macOS desktop" };
 scene.add(base);
 interactives.push(base);
 {
@@ -735,12 +722,13 @@ scene.add(lid);
       lidMesh.add(emblem);
     }
     model.traverse((o) => {
-      if (o.isMesh && !o.userData.action) o.userData = { action: "theme", label: "click ▸ change wallpaper" };
+      if (o.isMesh && !o.userData.action) o.userData = { action: "macbook", label: "open ▸ macOS desktop" };
     });
     /* Normalize: 358mm wide → 1.5 units, base resting on desk */
     const S = 1.5 / 358;
     model.scale.setScalar(S);
     scene.add(model);
+    interactives.push(model);
     const bounds = new THREE.Box3().setFromObject(model);
     model.position.x -= (bounds.min.x + bounds.max.x) / 2;
     model.position.z -= (bounds.min.z + bounds.max.z) / 2;
@@ -748,102 +736,26 @@ scene.add(lid);
   }, undefined, () => buildProceduralMacBook());
 }
 
-/* ── Desk props (same set as reference, minus keyboard/mouse) ─ */
-function tray(y) {
-  const grp = new THREE.Group();
-  grp.position.set(-1.12, y, 0.05);
-  scene.add(grp);
-  const b = (w, h, d, x, yy, z) => {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), M.tray);
-    m.position.set(x, yy, z); m.castShadow = true; m.receiveShadow = true;
-    grp.add(m);
-  };
-  b(0.6, 0.035, 0.78, 0, 0.018, 0);
-  b(0.6, 0.16, 0.035, 0, 0.1, -0.37);
-  b(0.035, 0.16, 0.78, -0.28, 0.1, 0);
-  b(0.035, 0.16, 0.78, 0.28, 0.1, 0);
-  b(0.6, 0.06, 0.035, 0, 0.05, 0.37);
-  return grp;
-}
-tray(TOP);
-tray(TOP + 0.17);
-box(0.5, 0.09, 0.62, M.paper, -1.12, TOP + 0.235, 0.05);
-
-for (let i = 0; i < 6; i++) {
-  const s = box(0.44, 0.016, 0.58, M.paper, -0.52, TOP + 0.008 + i * 0.017, 0.18);
-  s.rotation.y = (i % 2 ? -1 : 1) * 0.03 * i;
-}
-{
-  const sheet = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.4),
-    new THREE.MeshStandardMaterial({ map: sheetTex.tex, roughness: 0.9 }));
-  sheet.rotation.x = -Math.PI / 2;
-  sheet.rotation.z = 0.4;
-  sheet.position.set(-0.62, TOP + 0.003, 0.52);
-  sheet.receiveShadow = true;
-  scene.add(sheet);
-}
-[[0.92, M.binderA], [1.1, M.binderB]].forEach(([x, mat]) => {
-  box(0.15, 0.6, 0.42, mat, x, TOP + 0.3, -0.28);
-  const hole = new THREE.Mesh(new THREE.CircleGeometry(0.035, 20), M.dark);
-  hole.position.set(x, TOP + 0.12, -0.068);
-  scene.add(hole);
-});
-{
-  const mug = mesh(new THREE.CylinderGeometry(0.075, 0.068, 0.17, 28), M.mug, 1.34, TOP + 0.085, 0.3);
-  mug.castShadow = true;
-  const handle = mesh(new THREE.TorusGeometry(0.05, 0.013, 12, 24), M.mug, 1.42, TOP + 0.085, 0.3);
-  handle.rotation.y = Math.PI / 2;
-}
-/* Plant on the floor, right of desk */
-{
-  mesh(new THREE.CylinderGeometry(0.2, 0.16, 0.38, 24), M.pot, 2.15, 0.19, -0.55);
-  const leafGeo = new THREE.SphereGeometry(0.16, 12, 12);
-  for (let i = 0; i < 8; i++) {
-    const a = (i / 8) * Math.PI * 2;
-    const leaf = mesh(leafGeo, M.leaf, 2.15 + Math.cos(a) * 0.22, 0.75 + (i % 3) * 0.18, -0.55 + Math.sin(a) * 0.22);
-    leaf.scale.set(0.45, 1.5 + (i % 3) * 0.35, 0.22);
-    leaf.rotation.set(Math.sin(a) * 0.55, 0, Math.cos(a) * -0.55);
-  }
-}
-/* Chair */
-{
-  const chair = new THREE.Group();
-  chair.position.set(0.45, 0, 1.6);
-  scene.add(chair);
-  const c = (w, h, d, x, y, z, mat = M.chairTan) => {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-    m.position.set(x, y, z); m.castShadow = true; m.receiveShadow = true;
-    chair.add(m);
-    return m;
-  };
-  c(0.6, 0.09, 0.58, 0, 0.55, 0);
-  const back = c(0.55, 0.6, 0.09, 0, 1.0, 0.32);
-  back.rotation.x = 0.1;
-  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.5, 14), M.dark);
-  pole.position.set(0, 0.28, 0); pole.castShadow = true; chair.add(pole);
-  for (let i = 0; i < 5; i++) {
-    const a = (i / 5) * Math.PI * 2;
-    const leg = c(0.32, 0.045, 0.07, Math.cos(a) * 0.17, 0.06, Math.sin(a) * 0.17, M.dark);
-    leg.rotation.y = -a;
-    const wheel = new THREE.Mesh(new THREE.SphereGeometry(0.035, 12, 12), M.dark);
-    wheel.position.set(Math.cos(a) * 0.32, 0.035, Math.sin(a) * 0.32);
-    chair.add(wheel);
-  }
-}
-
 /* ── Picking + tooltip ──────────────────────────────────────── */
 const ray = new THREE.Raycaster();
 const ptr = new THREE.Vector2();
 const tooltip = $("tooltip");
 let downAt = null;
+let pointerDragged = false;
 function pickAt(cx, cy) {
   ptr.x = (cx / window.innerWidth) * 2 - 1;
   ptr.y = -(cy / window.innerHeight) * 2 + 1;
   ray.setFromCamera(ptr, camera);
-  const hits = ray.intersectObjects(interactives, false);
+  const hits = ray.intersectObjects(interactives, true);
   return hits[0]?.object || null;
 }
 renderer.domElement.addEventListener("pointermove", (e) => {
+  if (downAt && Math.hypot(e.clientX-downAt[0],e.clientY-downAt[1]) > 5) pointerDragged = true;
+  if (pointerDragged && downAt) {
+    tooltip.style.display = "none";
+    renderer.domElement.style.cursor = "grabbing";
+    return;
+  }
   if (stage !== "desk" || renderer.domElement.dataset.busy === "1") { tooltip.style.display = "none"; return; }
   const hit = pickAt(e.clientX, e.clientY);
   if (hit) {
@@ -857,12 +769,16 @@ renderer.domElement.addEventListener("pointermove", (e) => {
     renderer.domElement.style.cursor = "grab";
   }
 });
-renderer.domElement.addEventListener("pointerdown", (e) => { downAt = [e.clientX, e.clientY]; });
+renderer.domElement.addEventListener("pointerdown", (e) => {
+  downAt = [e.clientX, e.clientY];
+  pointerDragged = false;
+});
+renderer.domElement.addEventListener("pointercancel", () => { downAt = null; pointerDragged = true; });
 renderer.domElement.addEventListener("pointerup", (e) => {
-  if (!downAt || stage !== "desk" || flying) return;
+  if (!downAt) return;
   const dx = e.clientX - downAt[0], dy = e.clientY - downAt[1];
   downAt = null;
-  if (dx * dx + dy * dy > 25) return;
+  if (stage !== "desk" || flying || pointerDragged || e.button !== 0 || dx * dx + dy * dy > 25) return;
   const hit = pickAt(e.clientX, e.clientY);
   if (!hit) return;
   if (hit.userData.action === "macbook") openMacOS(macTab);
@@ -888,6 +804,7 @@ function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.05);
   const t = clock.elapsedTime;
+  updateAtmosphere(t);
 
   if (camTween) {
     const kRaw = Math.min(1, (performance.now() - camTween.start) / camTween.durMs);
