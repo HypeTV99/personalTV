@@ -1,6 +1,8 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
+import { DesktopSurface } from "./desktop-surface.js";
+import { bakeContactShadows } from "./contact-shadows.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 
 import { buildRealisticScene } from "./realistic-scene.js";
@@ -70,11 +72,11 @@ const ICONS = {
   link: `<svg viewBox="0 0 48 48"><rect x="4" y="4" width="40" height="40" rx="10" fill="#8e8e96"/><path d="M19 29 L29 19 M21 19 h8 v8" stroke="#fff" stroke-width="3.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
 };
 let macTab = 0;
-let userPickedTab = false;
-function setMacTab(i, fromUser = true) {
+
+function setMacTab(i) {
   macTab = ((i % TABS.length) + TABS.length) % TABS.length;
-  if (fromUser) userPickedTab = true;
-  if (!$("macos").classList.contains("hidden")) renderMac();
+
+  renderMac();
 }
 
 /* ── macOS overlay: icons, Finder, dock ─────────────────────── */
@@ -149,6 +151,9 @@ function renderMac() {
 }
 
 let screenMeshRef = null;
+let desktopOpen = false;
+const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+let returnView = null;
 
 /* Finder grows from the clicked icon, shrinks back on close */
 function finderBase() {
@@ -175,38 +180,38 @@ function closeFinder() {
 }
 
 function openMacOS(tab = macTab) {
-  const mz = $("macos");
-  if (flying || !mz.classList.contains("hidden")) return;
+  if (flying || desktopOpen || !screenMeshRef) return;
   setMacTab(tab);
-  const showOverlay = () => {
-    $("hud").classList.remove("on");
-    mz.classList.remove("hidden");
-    void mz.offsetWidth;
-    mz.classList.add("in");
-    const fin = $("finder");
-    fin.style.display = "flex";
-    popFinder(window.innerWidth / 2, window.innerHeight - 140);
-    renderMac();
-  };
-  /* Open the real interface immediately; keep the canvas preview on the desk. */
-  controls.enabled = false;
-  controls.autoRotate = false;
-  tooltip.style.display = "none";
-  showOverlay();
-}
-function closeMacOS() {
-  const mz = $("macos");
-  if (mz.classList.contains("hidden") || flying) return;
-  mz.classList.add("out");
-  setTimeout(() => { mz.classList.add("hidden"); mz.classList.remove("out", "in"); }, 240);
-  /* Pull back out to the desk, HUD fading in */
+  renderMac();
+  returnView = { position: camera.position.clone(), target: controls.target.clone() };
   flying = true;
   controls.enabled = false;
   controls.autoRotate = false;
-  flyTo(DESK_POS, DESK_TGT, 1.6, () => {
+  tooltip.style.display = "none";
+  $("hud").classList.remove("on");
+  screenMeshRef.updateWorldMatrix(true, false);
+  const center = screenMeshRef.getWorldPosition(new THREE.Vector3());
+  const orientation = screenMeshRef.getWorldQuaternion(new THREE.Quaternion());
+  const normal = new THREE.Vector3(0, 0, 1).applyQuaternion(orientation);
+  const scale = screenMeshRef.getWorldScale(new THREE.Vector3());
+  const width = screenMeshRef.geometry.parameters.width * scale.x;
+  const height = screenMeshRef.geometry.parameters.height * scale.y;
+  const distance = Math.max(height, width / camera.aspect) / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) * 1.08;
+  flyTo(center.clone().addScaledVector(normal, distance), center, reducedMotion.matches ? 0.01 : 1.45, async () => {
+    desktopOpen = true;
+    await desktopSurface.expand(camera, reducedMotion.matches);
+    flying = false;
+  });
+}
+async function closeMacOS() {
+  if (!desktopOpen || flying) return;
+  flying = true;
+  await desktopSurface.collapse(camera, reducedMotion.matches);
+  desktopOpen = false;
+  flyTo(returnView?.position || DESK_POS, returnView?.target || DESK_TGT, reducedMotion.matches ? 0.01 : 1.4, () => {
     flying = false;
     controls.enabled = true;
-    if (rotatePref) controls.autoRotate = true;
+    controls.autoRotate = rotatePref;
     $("hud").classList.add("on");
   });
 }
@@ -221,8 +226,8 @@ $("finClose").addEventListener("click", () => closeFinder());
 $("btnMac").addEventListener("click", () => openMacOS());
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
-    if (flying) { cancelFlight(); return; }
-    if (!$("macos").classList.contains("hidden")) closeMacOS();
+    if (flying) { if (!desktopOpen) cancelFlight(); return; }
+    if (desktopOpen) closeMacOS();
   }
   const n = ["1", "2", "3", "4"].indexOf(e.key);
   if (n >= 0) setMacTab(n);
@@ -297,13 +302,14 @@ $("btnRotate").classList.add("active");
 
 /* ── Three.js light-studio scene (procedural, original) ─────── */
 const stageEl = $("stage");
-const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true, powerPreference: "high-performance" });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = THREE.VSMShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 stageEl.appendChild(renderer.domElement);
+const desktopSurface = new DesktopSurface($("macos"), stageEl);
 
 const scene = new THREE.Scene();
 const STUDIO = new THREE.Color(0xd9d9de);
@@ -346,21 +352,24 @@ controls.addEventListener("start", () => {
 controls.addEventListener("end", () => {
   if (idleTimer) clearTimeout(idleTimer);
   idleTimer = setTimeout(() => {
-    if (rotatePref && controls.enabled && !flying && $("macos").classList.contains("hidden")) controls.autoRotate = true;
+    if (rotatePref && controls.enabled && !flying && !desktopOpen) controls.autoRotate = true;
   }, 4000);
 });
 
 /* Lights */
 scene.add(new THREE.HemisphereLight(0xffffff, 0x8f959e, 0.6));
 scene.add(new THREE.AmbientLight(0xffffff, 0.15));
-const sun = new THREE.DirectionalLight(0xffffff, 2.0);
-sun.position.set(5, 8, 4);
+const sun = new THREE.DirectionalLight(0xffffff, 1.65);
+sun.position.set(-3, 7, 4);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
-sun.shadow.camera.left = -7; sun.shadow.camera.right = 7;
-sun.shadow.camera.top = 7; sun.shadow.camera.bottom = -7;
+sun.shadow.camera.left = -3.8; sun.shadow.camera.right = 3.8;
+sun.shadow.camera.top = 3.8; sun.shadow.camera.bottom = -3.8;
 sun.shadow.camera.far = 25;
-sun.shadow.bias = -0.0004;
+sun.shadow.bias = -0.00005;
+sun.shadow.normalBias = 0.012;
+sun.shadow.radius = 5;
+sun.shadow.blurSamples = 12;
 scene.add(sun);
 const fill = new THREE.DirectionalLight(0xeef2ff, 0.5);
 fill.position.set(-4, 3, -3);
@@ -436,29 +445,6 @@ const deck = makeTex(1024, 640);
   deck.tex.needsUpdate = true;
 }
 
-/* Loose sheet texture (faint text lines) */
-const sheetTex = makeTex(128, 160);
-{
-  const g = sheetTex.ctx;
-  g.fillStyle = "#ffffff"; g.fillRect(0, 0, 128, 160);
-  g.fillStyle = "#c9ccd2";
-  for (let i = 0; i < 9; i++) g.fillRect(14, 22 + i * 14, 100 - (i % 3) * 18, 4);
-  sheetTex.tex.needsUpdate = true;
-}
-
-/* ── Light macOS screen texture ─────────────────────────────── */
-const THEMES = [
-  { a: "#b9d2f2", b: "#e3d3f0", wash: "rgba(90,140,220,0.10)", name: "sierra light" },
-  { a: "#bfe6dc", b: "#ecf3d4", wash: "rgba(48,196,141,0.10)", name: "lagoon light" },
-  { a: "#f0d3c4", b: "#f7ecd4", wash: "rgba(230,150,90,0.10)", name: "sand light" },
-  { a: "#d3def5", b: "#ccd9ec", wash: "rgba(120,130,180,0.12)", name: "mist light" },
-];
-/* Real Tahoe wallpaper from the local asset pack (gradient fallback) */
-const wallImg = new Image();
-let wallReady = false;
-wallImg.onload = () => { wallReady = true; paintMac(); };
-wallImg.src = "assets/wallpaper.png";
-
 /* Glowing lid emblem: pack's logo art, inverted to white-on-transparent */
 const logoCanvas = document.createElement("canvas");
 logoCanvas.width = logoCanvas.height = 256;
@@ -480,146 +466,7 @@ logoImg.onload = () => paintLogo();
 logoImg.src = "assets/macbook/apple-logo.jpg";
 paintLogo();
 const logoMat = new THREE.MeshBasicMaterial({ color: 0xffffff, alphaMap: logoTex, transparent: true });
-let themeIdx = 0;
-let cursorOn = true;
-setInterval(() => { cursorOn = !cursorOn; }, 530);
-setInterval(() => { if (stage === "desk" && !userPickedTab) macTab = (macTab + 1) % TABS.length; }, 6000);
 
-const mac = makeTex(1024, 640);
-function macBodyLines() {
-  const id = TABS[macTab].id;
-  if (id === "about") {
-    return [`${SITE.name || "Your Name"}`, `${SITE.role || "Site Reliability Engineer"}`, ...((SITE.about || []).slice(0, 3))];
-  }
-  if (id === "experience") {
-    return (SITE.experience || []).slice(0, 2).flatMap((e) => [`${e.title}`, `  ${e.period}`]).slice(0, 5);
-  }
-  if (id === "projects") {
-    return (SITE.projects || []).slice(0, 4).map((p) => `${p.name} — ${p.desc}`);
-  }
-  return [`${SITE.email || "you@example.com"}`, ...((SITE.socials || []).slice(0, 3).map((s) => s.label))];
-}
-function drawPict(g, kind, cx, cy, s) {
-  const u = s / 44;
-  g.save();
-  g.translate(cx, cy);
-  g.fillStyle = "#fff"; g.strokeStyle = "#fff";
-  if (kind === "finder") {
-    g.beginPath(); g.arc(0, 1 * u, 11 * u, 0, 7); g.fill();
-    g.fillStyle = "#5aa9ff";
-    g.beginPath(); g.arc(-4 * u, -1 * u, 1.8 * u, 0, 7); g.fill();
-    g.beginPath(); g.arc(4 * u, -1 * u, 1.8 * u, 0, 7); g.fill();
-    g.lineWidth = 2 * u; g.beginPath(); g.arc(0, 3 * u, 5.5 * u, 0.5, Math.PI - 0.5); g.stroke();
-  } else if (kind === "term") {
-    g.font = `bold ${15 * u}px monospace`; g.textAlign = "center";
-    g.fillText(">_", 0, 6 * u); g.textAlign = "left";
-  } else if (kind === "compass") {
-    g.lineWidth = 2.5 * u;
-    g.beginPath(); g.arc(0, 0, 12 * u, 0, 7); g.stroke();
-    g.beginPath(); g.moveTo(0, -11 * u); g.lineTo(4 * u, 0); g.lineTo(0, 11 * u); g.lineTo(-4 * u, 0); g.closePath(); g.fill();
-    g.fillStyle = "#ff5f57";
-    g.beginPath(); g.moveTo(0, -11 * u); g.lineTo(4 * u, 0); g.lineTo(-4 * u, 0); g.closePath(); g.fill();
-  } else if (kind === "mail") {
-    g.fillRect(-13 * u, -9 * u, 26 * u, 18 * u);
-    g.fillStyle = "#0a84ff";
-    g.beginPath(); g.moveTo(-13 * u, -7 * u); g.lineTo(0, 2 * u); g.lineTo(13 * u, -7 * u);
-    g.lineTo(13 * u, -3 * u); g.lineTo(0, 6 * u); g.lineTo(-13 * u, -3 * u); g.closePath(); g.fill();
-  } else if (kind === "photos") {
-    ["#fa4c64", "#ff9d5c", "#ffd479", "#30c48d", "#5aa9ff", "#b07fe8"].forEach((c, i) => {
-      const a = (i / 6) * Math.PI * 2;
-      g.fillStyle = c;
-      g.beginPath(); g.arc(Math.cos(a) * 7 * u, Math.sin(a) * 7 * u, 4.5 * u, 0, 7); g.fill();
-    });
-  } else if (kind === "music") {
-    g.beginPath(); g.ellipse(-5 * u, 8 * u, 6 * u, 4.5 * u, 0, 0, 7); g.fill();
-    g.fillRect(0, -11 * u, 3 * u, 20 * u);
-    g.beginPath(); g.moveTo(0, -11 * u); g.quadraticCurveTo(10 * u, -9 * u, 9 * u, 0);
-    g.lineTo(6 * u, 0); g.quadraticCurveTo(7 * u, -7 * u, 0, -8 * u); g.closePath(); g.fill();
-  } else if (kind === "trash") {
-    g.fillStyle = "#6e6e74";
-    g.beginPath(); g.moveTo(-10 * u, -6 * u); g.lineTo(10 * u, -6 * u); g.lineTo(8 * u, 12 * u); g.lineTo(-8 * u, 12 * u); g.closePath(); g.fill();
-    g.fillRect(-12 * u, -9 * u, 24 * u, 3 * u);
-    g.fillRect(-3 * u, -12 * u, 6 * u, 3 * u);
-  } else if (kind === "folder") {
-    g.beginPath();
-    g.moveTo(-13 * u, -4 * u); g.lineTo(-5 * u, -11 * u); g.lineTo(1 * u, -11 * u); g.lineTo(5 * u, -6 * u);
-    g.lineTo(13 * u, -6 * u); g.lineTo(13 * u, 11 * u); g.lineTo(-13 * u, 11 * u); g.closePath(); g.fill();
-    g.fillStyle = "rgba(255,255,255,0.45)";
-    g.fillRect(-13 * u, -1 * u, 26 * u, 12 * u);
-  }
-  g.restore();
-}
-function paintMac() {
-  const g = mac.ctx, th = THEMES[themeIdx];
-  if (wallReady && wallImg.naturalWidth) {
-    const s = Math.max(1024 / wallImg.naturalWidth, 640 / wallImg.naturalHeight);
-    const dw = wallImg.naturalWidth * s, dh = wallImg.naturalHeight * s;
-    g.drawImage(wallImg, (1024 - dw) / 2, (640 - dh) / 2, dw, dh);
-    g.fillStyle = th.wash; g.fillRect(0, 0, 1024, 640);
-  } else {
-    const grad = g.createLinearGradient(0, 0, 1024, 640);
-    grad.addColorStop(0, th.a); grad.addColorStop(1, th.b);
-    g.fillStyle = grad; g.fillRect(0, 0, 1024, 640);
-    g.fillStyle = "rgba(255,255,255,0.5)";
-    g.beginPath(); g.arc(830, 130, 130, 0, 7); g.fill();
-    g.fillStyle = "rgba(255,255,255,0.35)";
-    g.beginPath(); g.arc(170, 510, 150, 0, 7); g.fill();
-  }
-
-  // menu bar (light)
-  g.fillStyle = "rgba(255,255,255,0.75)"; g.fillRect(0, 0, 1024, 38);
-  g.fillStyle = "#1d1d1f"; g.font = "bold 19px sans-serif";
-  g.fillText("●", 16, 26);
-  g.font = "15px sans-serif";
-  g.fillText(`${SITE.name || "Your Name"}`, 44, 25);
-  g.fillStyle = "rgba(29,29,31,0.6)";
-  g.fillText("File   Edit   View   Go   Window   Help", 250, 25);
-  const d = new Date(), p2 = (n) => String(n).padStart(2, "0");
-  g.fillStyle = "#1d1d1f";
-  g.fillText(`${p2(d.getHours())}:${p2(d.getMinutes())}`, 930, 25);
-
-  // finder window (light)
-  const wx = 92, wy = 84, ww = 840, wh = 420;
-  g.shadowColor = "rgba(30,40,70,0.35)"; g.shadowBlur = 40; g.shadowOffsetY = 14;
-  g.fillStyle = "rgba(255,255,255,0.96)";
-  rr(g, wx, wy, ww, wh, 18); g.fill();
-  g.shadowColor = "transparent"; g.shadowBlur = 0; g.shadowOffsetY = 0;
-  g.fillStyle = "#ececf0"; rr(g, wx, wy, ww, 58, 18); g.fill();
-  g.fillRect(wx, wy + 40, ww, 18);
-  ["#ff5f57", "#febc2e", "#28c840"].forEach((c, i) => {
-    g.fillStyle = c; g.beginPath(); g.arc(wx + 34 + i * 30, wy + 30, 10, 0, 7); g.fill();
-  });
-  g.fillStyle = "#3a3a3c"; g.font = "600 15px sans-serif"; g.textAlign = "center";
-  g.fillText(`${TABS[macTab].id} — Finder`, wx + ww / 2, wy + 35);
-  g.textAlign = "left";
-  TABS.forEach((t, i) => {
-    const tx = wx + 24 + i * 150, ty = wy + 68, tw = 138, thh = 34;
-    if (i === macTab) { g.fillStyle = "#e2e2e8"; rr(g, tx, ty, tw, thh, 9); g.fill(); }
-    g.fillStyle = i === macTab ? "#1d1d1f" : "rgba(29,29,31,0.55)";
-    g.font = "14px monospace";
-    g.fillText(`${i + 1}. ${t.id}`, tx + 14, ty + 23);
-  });
-  g.font = "17px monospace";
-  const lines = macBodyLines().slice(0, 6);
-  lines.forEach((l, i) => {
-    g.fillStyle = i === 0 ? "#0a84ff" : "#333336";
-    g.fillText(String(l).slice(0, 54), wx + 28, wy + 150 + i * 34);
-  });
-  if (cursorOn) { g.fillStyle = "#0a84ff"; g.fillRect(wx + 28, wy + 152 + lines.length * 34, 11, 19); }
-
-  // dock (light)
-  const dw = 560, dh = 66, dx = (1024 - dw) / 2, dy = 640 - dh - 14;
-  g.fillStyle = "rgba(255,255,255,0.5)";
-  rr(g, dx, dy, dw, dh, 18); g.fill();
-  const apps = ["finder", "term", "compass", "mail", "photos", "music", "trash", "folder"];
-  const appBg = { finder: "#5aa9ff", term: "#232328", compass: "#0a84ff", mail: "#0a84ff", photos: "#eef0f4", music: "#fa4c64", trash: "#c7ccd4", folder: "#5aa9ff" };
-  apps.forEach((kind, i) => {
-    const ix = dx + 22 + i * 66;
-    g.fillStyle = appBg[kind]; rr(g, ix, dy + 11, 44, 44, 11); g.fill();
-    drawPict(g, kind, ix + 22, dy + 33, 44);
-  });
-  mac.tex.needsUpdate = true;
-}
 
 /* ── MacBook: real 2020 model first, procedural fallback ────── */
 const interactives = [];
@@ -654,12 +501,13 @@ scene.add(lid);
   bezel.position.set(0, 0.5, 0.024);
   lid.add(bezel);
   const screen = new THREE.Mesh(new THREE.PlaneGeometry(1.34, 0.84),
-    new THREE.MeshBasicMaterial({ map: mac.tex }));
+    new THREE.MeshBasicMaterial({ color: 0x000000 }));
   screen.position.set(0, 0.5, 0.032);
   screen.userData = { action: "macbook", label: "open ▸ macOS desktop" };
   lid.add(screen);
   interactives.push(screen);
   screenMeshRef = screen;
+  desktopSurface.attach(screen);
   const cam = new THREE.Mesh(new THREE.CircleGeometry(0.008, 12),
     new THREE.MeshBasicMaterial({ color: 0x1a2733 }));
   cam.position.set(0, 0.93, 0.032);
@@ -709,13 +557,14 @@ scene.add(lid);
       const h = Math.min(bb.max.y - bb.min.y - 30, 218);
       const screen = new THREE.Mesh(
         new THREE.PlaneGeometry(w, h),
-        new THREE.MeshBasicMaterial({ map: mac.tex })
+        new THREE.MeshBasicMaterial({ color: 0x000000 })
       );
       screen.position.set((bb.max.x + bb.min.x) / 2, (bb.max.y + bb.min.y) / 2 + 4, bb.max.z + 0.7);
       screen.userData = { action: "macbook", label: "open ▸ macOS desktop" };
       lidMesh.add(screen);
       interactives.push(screen);
       screenMeshRef = screen;
+  desktopSurface.attach(screen);
       const emblem = new THREE.Mesh(new THREE.PlaneGeometry(56, 56), logoMat);
       emblem.position.set((bb.max.x + bb.min.x) / 2, (bb.max.y + bb.min.y) / 2 + 6, bb.min.z - 0.7);
       emblem.rotation.y = Math.PI;
@@ -733,7 +582,8 @@ scene.add(lid);
     model.position.x -= (bounds.min.x + bounds.max.x) / 2;
     model.position.z -= (bounds.min.z + bounds.max.z) / 2;
     model.position.y += TOP - bounds.min.y;
-  }, undefined, () => buildProceduralMacBook());
+    bakeContactShadows(scene, renderer);
+  }, undefined, () => { buildProceduralMacBook(); bakeContactShadows(scene, renderer); });
 }
 
 /* ── Picking + tooltip ──────────────────────────────────────── */
@@ -782,13 +632,7 @@ renderer.domElement.addEventListener("pointerup", (e) => {
   const hit = pickAt(e.clientX, e.clientY);
   if (!hit) return;
   if (hit.userData.action === "macbook") openMacOS(macTab);
-  else if (hit.userData.action === "theme") {
-    themeIdx = (themeIdx + 1) % THEMES.length;
-    paintMac();
-    renderer.domElement.dataset.busy = "1";
-    renderer.domElement.style.cursor = `url("assets/cursors/beachball.svg") 16 16, wait`;
-    setTimeout(() => { renderer.domElement.dataset.busy = ""; renderer.domElement.style.cursor = "grab"; }, 600);
-  }
+
 });
 
 /* ── Resize + loop ──────────────────────────────────────────── */
@@ -796,10 +640,11 @@ window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  desktopSurface.resize();
 });
 
 const clock = new THREE.Clock();
-let screenAcc = 1;
+
 function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.05);
@@ -808,22 +653,23 @@ function animate() {
 
   if (camTween) {
     const kRaw = Math.min(1, (performance.now() - camTween.start) / camTween.durMs);
-    const k = kRaw >= 1 ? 1 : 1 - Math.pow(1 - kRaw, 3);
+    const k = kRaw * kRaw * (3 - 2 * kRaw);
     camera.position.lerpVectors(camTween.fp, camTween.tp, k);
     controls.target.lerpVectors(camTween.ft, camTween.tt, k);
     if (kRaw >= 1) { const d = camTween.done; camTween = null; if (d) d(); }
   }
 
-  screenAcc += dt;
-  if (screenAcc > 1.0) { paintMac(); screenAcc = 0; }
+
   screenGlow.intensity = 3 + Math.sin(t * 1.8) * 0.4;
 
   controls.update();
   /* Overlay covers the canvas fullscreen: skip 3D work while it idles */
-  const covered = !$("macos").classList.contains("hidden") && !camTween;
-  if (!covered) renderer.render(scene, camera);
+  const covered = desktopOpen && !camTween;
+  if (!covered) {
+    renderer.render(scene, camera);
+    desktopSurface.render(camera);
+  }
 }
 buildMacChrome();
 renderMac();
-paintMac();
 animate();

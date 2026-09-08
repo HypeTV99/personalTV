@@ -48,16 +48,9 @@ export function buildRealisticScene(scene, top, renderer) {
   function ring(r,t,m,x,y,z,p=scene) {const o=mesh(new THREE.TorusGeometry(r,t,10,48),m,x,y,z,p);o.rotation.x=Math.PI/2;return o;}
 
   // Seamless warm studio with fine surface grain and no architectural backdrop.
-  scene.background=new THREE.Color(0xe6dfd1);
-  scene.fog=new THREE.Fog(0xe6dfd1,9,24);
-  const floorGrain=noise.clone();floorGrain.repeat.set(100,100);floorGrain.needsUpdate=true;
-  // Mineral floor, beveled walnut slab, powder-coated frame and adjustable feet.
-  const floor=mesh(new THREE.PlaneGeometry(100,100),mat(0xd7cdbb,.96,0,{bumpMap:floorGrain,bumpScale:.006}),0,-.006,0);
-  floor.rotation.x=-Math.PI/2; floor.castShadow=false;
-  const rugMat=mat(0x9faaa0,1,0,{bumpMap:weave,bumpScale:.008});
-  box(4.7,.009,3.75,rugMat,.2,.005,.52,scene,.003);
-  for(const x of [-2.08,2.48])box(.017,.002,3.62,ivory,x,.011,.52,scene,.0005);
-  for(const z of [-1.29,2.33])box(4.57,.002,.017,ivory,.2,.011,z,scene,.0005);
+  scene.background=null;
+  scene.fog=new THREE.Fog(0xd6d6d8,9,24);
+  // A baked contact-shadow plane grounds the objects on the seamless backdrop.
   box(3.1,.1,1.45,wood,0,top-.05,0,scene,.025);
   for(const x of [-1.42,1.42]) {
     for(const z of [-.59,.59]) {
