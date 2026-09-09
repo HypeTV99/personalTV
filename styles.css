@@ -294,3 +294,21 @@ body {
   .hud-bl { display: none; }
   .finder { top: 44%; }
 }
+
+/* Henry-motion mock: Framer-style micro-interactions (v1 untouched).
+   Original variants: hovering opacity .8 (.1s), active scale .8 opacity .5,
+   hide y:12 opacity 0 (.5s easeOut). */
+.pill-btn { transition: opacity .1s ease-out, transform .2s ease-out, background .2s ease-out; will-change: transform, opacity; }
+.pill-btn:hover { opacity: .8; }
+.pill-btn:active { transform: scale(.8); opacity: .5; }
+.mac-icon, .dock-app { transition: opacity .1s ease-out, transform .2s ease-out, filter .2s ease-out; }
+.mac-icon:hover, .dock-app:hover { opacity: .8; }
+.mac-icon:active, .dock-app:active { transform: scale(.8); opacity: .5; }
+#finSide button { transition: opacity .1s ease-out, background .15s ease-out; }
+#finSide button:hover { opacity: .8; }
+#finSide button:active { opacity: .5; }
+#beginPill { transition: opacity .5s ease-out, transform .5s ease-out; }
+#beginPill.hidden { opacity: 0; transform: translateY(12px); }
+#hud { transition: opacity .5s ease-out; }
+.blink { animation: henryblink 1.1s steps(1) infinite; }
+@keyframes henryblink { 0%,55% { opacity: 1; } 56%,100% { opacity: 0; } }

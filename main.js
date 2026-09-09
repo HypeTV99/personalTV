@@ -6,6 +6,14 @@ import { bakeContactShadows } from "./contact-shadows.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 
 import { buildRealisticScene } from "./realistic-scene.js";
+import { AudioManager, MOUSE_POS } from "./audio-manager.js";
+import { CameraManager, Easing, HENRY_CUBIC, KEY } from "./camera-manager.js";
+
+// Audio (henryheffernan port): assigned after camera/scene exist; typeInto/keys guard on null.
+let audioManager = null;
+let lastKey = "";
+// Henry camera (camera-manager.js): assigned after camera/controls exist; flow handlers guard on null.
+let camManager = null;
 
 const SITE = window.SITE || {};
 const $ = (id) => document.getElementById(id);
@@ -13,19 +21,24 @@ function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 function typeInto(el, text, speed = 34) {
+  // Henry staged auto-type: jittered 50-170ms/char (not fixed interval).
   return new Promise((res) => {
     el.textContent = "";
     let i = 0;
-    const iv = setInterval(() => {
+    const step = () => {
       el.textContent = text.slice(0, ++i);
-      if (i >= text.length) { clearInterval(iv); res(); }
-    }, speed);
+      // Original _AUTO_ path: every auto-typed char plays ccType {vol .1, pitch 20}.
+      try { audioManager?.playCcType(); } catch { /* audio not ready */ }
+      if (i >= text.length) { res(); return; }
+      setTimeout(step, 45 + Math.random() * 75);
+    };
+    setTimeout(step, 45 + Math.random() * 75);
   });
 }
 
 /* ── Placeholders into HUD / gate ───────────────────────────── */
 const OWNER = SITE.name || "Your Name";
-document.title = `${OWNER} — Portfolio`;
+document.title = `${OWNER} — Portfolio · henry-motion mock`;
 $("gateTitle").textContent = `${OWNER} Portfolio Showcase`;
 $("hudName").textContent = OWNER;
 $("hudRole").textContent = SITE.role || "Site Reliability Engineer";
@@ -95,6 +108,7 @@ function buildMacChrome() {
   ).join("");
   document.querySelectorAll("#macIcons .mac-icon, #macDock .dock-app").forEach((b) =>
     b.addEventListener("click", (e) => {
+      try { audioManager?.playMouseDown(); setTimeout(() => { try { audioManager?.playMouseUp(); } catch {} }, 90); } catch {}
       b.classList.remove("bounce"); void b.offsetWidth; b.classList.add("bounce");
       setTimeout(() => b.classList.remove("bounce"), 600);
       const t = parseInt(b.dataset.tab, 10);
@@ -104,7 +118,7 @@ function buildMacChrome() {
       renderMac();
     }));
   document.querySelectorAll("#finSide button").forEach((b) =>
-    b.addEventListener("click", () => { setMacTab(parseInt(b.dataset.tab, 10)); renderMac(); }));
+    b.addEventListener("click", () => { try { audioManager?.playMouseDown(); } catch {} setMacTab(parseInt(b.dataset.tab, 10)); renderMac(); }));
 }
 
 function renderMac() {
@@ -185,6 +199,7 @@ function openMacOS(tab = macTab) {
   renderMac();
   returnView = { position: camera.position.clone(), target: controls.target.clone() };
   flying = true;
+  try { camManager?.cancelToManual(); if (camManager) camManager.current = null; } catch {}
   controls.enabled = false;
   controls.autoRotate = false;
   tooltip.style.display = "none";
@@ -199,6 +214,8 @@ function openMacOS(tab = macTab) {
   const distance = Math.max(height, width / camera.aspect) / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) * 1.08;
   flyTo(center.clone().addScaledVector(normal, distance), center, reducedMotion.matches ? 0.01 : 1.45, async () => {
     desktopOpen = true;
+    // Henry MONITOR keyframe while inside the screen.
+    try { if (camManager) { camManager.current = KEY.MONITOR; camManager.target = null; } } catch {}
     await desktopSurface.expand(camera, reducedMotion.matches);
     flying = false;
   });
@@ -212,26 +229,55 @@ async function closeMacOS() {
     flying = false;
     controls.enabled = true;
     controls.autoRotate = rotatePref;
+    // Back on the desk keyframe so parallax/drift resume.
+    try { if (camManager) { camManager.current = KEY.DESK; camManager.target = null; } } catch {}
     $("hud").classList.add("on");
   });
 }
-$("macExit").addEventListener("click", closeMacOS);
-$("macBack").addEventListener("click", closeMacOS);
+$("macExit").addEventListener("click", () => { try { audioManager?.playMouseDown(); } catch {} closeMacOS(); });
+$("macBack").addEventListener("click", () => { try { audioManager?.playMouseDown(); } catch {} closeMacOS(); });
 /* Clicking empty desktop (wallpaper) also goes back to the 3D desk */
 $("macos").addEventListener("click", (e) => {
   if (e.target.closest(".finder, .mac-icons, .mac-dock, .mac-menu, #macBack")) return;
   closeMacOS();
 });
-$("finClose").addEventListener("click", () => closeFinder());
-$("btnMac").addEventListener("click", () => openMacOS());
+$("finClose").addEventListener("click", () => { try { audioManager?.playMouseDown(); } catch {} closeFinder(); });
+$("btnMac").addEventListener("click", () => { try { audioManager?.playMouseDown(); } catch {} openMacOS(); });
+$("btnMute")?.addEventListener("click", (e) => {
+  const muted = audioManager ? audioManager.setMuted(!audioManager.muted) : false;
+  e.currentTarget.textContent = muted ? "UNMUTE" : "MUTE";
+  e.currentTarget.classList.toggle("active", !muted);
+});
 window.addEventListener("keydown", (e) => {
+  // Original real-key path: distinct keys play keyboardKeydown (random 1-6), vol .8 positional.
+  // M toggles mute (maps original muteToggle button).
+  if (e.key === "m" || e.key === "M") {
+    const muted = audioManager ? audioManager.setMuted(!audioManager.muted) : false;
+    const b = $("btnMute");
+    if (b) { b.textContent = muted ? "UNMUTE" : "MUTE"; }
+    return;
+  }
   if (e.key === "Escape") {
+    if (e.repeat !== true && lastKey !== "Escape") try { audioManager?.playKeyboard(); } catch {}
+    lastKey = "Escape";
     if (flying) { if (!desktopOpen) cancelFlight(); return; }
     if (desktopOpen) closeMacOS();
+    return;
   }
   const n = ["1", "2", "3", "4"].indexOf(e.key);
-  if (n >= 0) setMacTab(n);
+  if (n >= 0) {
+    if (lastKey !== e.key) try { audioManager?.playKeyboard(); } catch {}
+    lastKey = e.key;
+    setMacTab(n);
+    return;
+  }
+  // Any other real key (desk / macOS open): original inComputer keyboard click, no auto-repeat spam.
+  if (!e.repeat && lastKey !== e.key && (stage === "desk" || desktopOpen)) {
+    try { audioManager?.playKeyboard(); } catch {}
+  }
+  lastKey = e.key;
 });
+window.addEventListener("keyup", () => { lastKey = ""; });
 
 /* Finder drag */
 {
@@ -256,6 +302,8 @@ window.addEventListener("keydown", (e) => {
 let stage = "gate";
 let flying = false;
 let camTween = null;
+// Henry drift phases key off elapsed seconds; performance clock is equivalent here.
+function clockTime() { return performance.now() / 1000; }
 /* Wall-clock tweens: always finish in `dur` seconds, even at low fps */
 function flyTo(pos, tgt, dur = 2.2, done = null) {
   camTween = { start: performance.now(), durMs: dur * 1000, fp: camera.position.clone(), tp: pos.clone(), ft: controls.target.clone(), tt: tgt.clone(), done };
@@ -268,10 +316,14 @@ function cancelFlight() {
 }
 $("startBtn").addEventListener("click", () => {
   if (stage !== "gate") return;
+  // Original needs a user gesture to create/resume AudioContext — START is ours.
+  try { audioManager?.unlock(); audioManager?.preload(); } catch {}
   stage = "wide";
   $("gate").classList.add("gone");
   $("beginPill").classList.remove("hidden");
   typeInto($("beginText"), "Click anywhere to begin ", 45);
+  // Henry setPostLoadTransition: loading -> IDLE 2500ms Exponential.Out sweep.
+  try { camManager?.transition(KEY.IDLE, 2500, Easing.ExponentialOut, null, clockTime()); } catch {}
   setTimeout(() => $("gate").remove(), 700);
 });
 window.addEventListener("pointerup", (e) => {
@@ -279,11 +331,17 @@ window.addEventListener("pointerup", (e) => {
   if (pointerDragged) return;
   if (e.target.closest("#gate, #hud, #macos, button")) return;
   stage = "desk";
+  // Original loadingScreenDone: office loop (lowpass 1000) + startup once, in this order.
+  try { audioManager?.startAmbience(); } catch {}
   const pill = $("beginPill");
   pill.classList.add("flash");
   setTimeout(() => { pill.classList.add("hidden"); pill.classList.remove("flash"); }, 220);
   $("hud").classList.add("on");
-  flyTo(DESK_POS, DESK_TGT, 2.4);
+  // Henry DESK entry: 1000ms Quintic.InOut (was 2.4s smoothstep).
+  try {
+    if (camManager) camManager.transition(KEY.DESK, 1000, Easing.QuinticInOut, null, clockTime());
+    else flyTo(DESK_POS, DESK_TGT, 2.4);
+  } catch { flyTo(DESK_POS, DESK_TGT, 2.4); }
   (async () => {
     document.querySelector(".hud-row").style.opacity = "0";
     await typeInto($("hudName"), OWNER, 42);
@@ -291,14 +349,36 @@ window.addEventListener("pointerup", (e) => {
     document.querySelector(".hud-row").style.opacity = "1";
   })();
 });
-let rotatePref = true;
-$("btnCam").addEventListener("click", () => flyTo(DESK_POS, DESK_TGT, 1.4));
+// Henry freeCam starts OFF (was auto-rotate ON in v1) — ROTATE enables the orbit view.
+let rotatePref = false;
+$("btnCam").addEventListener("click", () => {
+  try { audioManager?.playMouseDown(); } catch {}
+  controls.enabled = true;
+  controls.autoRotate = rotatePref;
+  try {
+    if (camManager) camManager.transition(KEY.DESK, 1000, Easing.QuinticInOut, null, clockTime());
+    else flyTo(DESK_POS, DESK_TGT, 1.4);
+  } catch { flyTo(DESK_POS, DESK_TGT, 1.4); }
+});
 $("btnRotate").addEventListener("click", (e) => {
   rotatePref = !rotatePref;
-  controls.autoRotate = rotatePref;
   e.currentTarget.classList.toggle("active", rotatePref);
+  try { audioManager?.playMouseDown(); } catch {}
+  // Henry setFreeCamListeners: on -> ORBIT_START 750ms custom cubic; off -> IDLE 4000ms Exponential.Out.
+  try {
+    if (camManager) {
+      if (rotatePref) {
+        controls.enabled = true;
+        camManager.transition(KEY.ORBIT_START, 750, HENRY_CUBIC, () => { controls.autoRotate = true; }, clockTime());
+      } else {
+        controls.autoRotate = false;
+        camManager.transition(KEY.IDLE, 4000, Easing.ExponentialOut, null, clockTime());
+      }
+    } else {
+      controls.autoRotate = rotatePref;
+    }
+  } catch { controls.autoRotate = rotatePref; }
 });
-$("btnRotate").classList.add("active");
 
 /* ── Three.js light-studio scene (procedural, original) ─────── */
 const stageEl = $("stage");
@@ -328,10 +408,15 @@ const WIDE_POS = new THREE.Vector3(5.4, 3.5, 7.4);
 const WIDE_TGT = new THREE.Vector3(0, 0.75, 0);
 const DESK_POS = new THREE.Vector3(1.5, 1.95, 3.1);
 const DESK_TGT = new THREE.Vector3(0, 1.08, 0.05);
-camera.position.copy(WIDE_POS);
+// Henry LOADING keyframe: gate sits on the high sweep start, START flies to IDLE.
+camera.position.set(9.5, 7.5, 13.5);
+
+/* Audio: same graph as original (listener on camera, office+startup, positional mouse/keys) */
+audioManager = new AudioManager(camera, scene);
+audioManager.preload();
 
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.copy(WIDE_TGT);
+controls.target.set(0, 0.4, 0);
 controls.enableDamping = true;
 controls.enableRotate = true;
 controls.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
@@ -340,12 +425,17 @@ controls.dampingFactor = 0.06;
 controls.minDistance = 1.2;
 controls.maxDistance = 16;
 controls.maxPolarAngle = 1.53;
-controls.autoRotate = true;
+// Henry: no auto-rotate until freeCam (ROTATE) is enabled.
+controls.autoRotate = false;
 controls.autoRotateSpeed = 0.55;
+
+/* Henry camera keyframes (camera-manager.js): idle drift + desk parallax + aspect dolly. */
+camManager = new CameraManager(camera, controls);
 let idleTimer = null;
 controls.addEventListener("start", () => {
   // Manual input takes ownership from a reset/entry camera animation.
   if (camTween) cancelFlight();
+  try { camManager?.cancelToManual(); } catch {}
   controls.autoRotate = false;
   if (idleTimer) clearTimeout(idleTimer);
 });
@@ -618,20 +708,54 @@ renderer.domElement.addEventListener("pointermove", (e) => {
     tooltip.style.display = "none";
     renderer.domElement.style.cursor = "grab";
   }
+  // Henry monitor hover: settling on the screen flies to MONITOR (2000ms custom cubic);
+  // drifting off flies back to DESK (1000ms Quintic). Guarded so it never fights drags/flights.
+  try {
+    if (camManager && stage === "desk" && !flying && !desktopOpen && !downAt && !camTween && !camManager.tween) {
+      if (hit && camManager.current === KEY.DESK && !camManager.target) {
+        camManager.transition(KEY.MONITOR, 2000, HENRY_CUBIC, null, clockTime());
+      } else if (!hit && camManager.current === KEY.MONITOR && !camManager.target) {
+        camManager.transition(KEY.DESK, 1000, Easing.QuinticInOut, null, clockTime());
+      }
+    }
+  } catch {}
 });
 renderer.domElement.addEventListener("pointerdown", (e) => {
   downAt = [e.clientX, e.clientY];
   pointerDragged = false;
+  // Original mousedown inComputer path (positional, vol .8). Only when desk stage + over macbook.
+  if (stage === "desk" && !flying && e.button === 0) {
+    try {
+      const hit = pickAt(e.clientX, e.clientY);
+      if (hit) audioManager?.playMouseDown(MOUSE_POS);
+    } catch {}
+  }
 });
 renderer.domElement.addEventListener("pointercancel", () => { downAt = null; pointerDragged = true; });
 renderer.domElement.addEventListener("pointerup", (e) => {
   if (!downAt) return;
   const dx = e.clientX - downAt[0], dy = e.clientY - downAt[1];
   downAt = null;
+  // Original mouseup inComputer path — fires even for drags/cancels on the computer.
+  try {
+    if (stage === "desk" && e.button === 0) {
+      const hit = pickAt(e.clientX, e.clientY);
+      if (hit) audioManager?.playMouseUp(MOUSE_POS);
+    }
+  } catch {}
   if (stage !== "desk" || flying || pointerDragged || e.button !== 0 || dx * dx + dy * dy > 25) return;
   const hit = pickAt(e.clientX, e.clientY);
-  if (!hit) return;
-  if (hit.userData.action === "macbook") openMacOS(macTab);
+  if (hit) {
+    if (hit.userData.action === "macbook") openMacOS(macTab);
+    return;
+  }
+  // Henry mousedown toggle: empty-desk click swaps IDLE<->DESK (1000ms Quintic), like the original.
+  try {
+    if (camManager && !camTween && !camManager.tween && !desktopOpen) {
+      if (camManager.current === KEY.DESK) camManager.transition(KEY.IDLE, 1000, Easing.QuinticInOut, null, clockTime());
+      else if (camManager.current === KEY.IDLE) camManager.transition(KEY.DESK, 1000, Easing.QuinticInOut, null, clockTime());
+    }
+  } catch {}
 
 });
 
@@ -657,12 +781,22 @@ function animate() {
     camera.position.lerpVectors(camTween.fp, camTween.tp, k);
     controls.target.lerpVectors(camTween.ft, camTween.tt, k);
     if (kRaw >= 1) { const d = camTween.done; camTween = null; if (d) d(); }
+  } else if (!flying && !desktopOpen) {
+    // Henry keyframe follow: idle drift + desk parallax (camTween path stays for macOS flights).
+    try {
+      if (camManager && screenMeshRef && camManager.screenMesh !== screenMeshRef) {
+        camManager.setScreenMesh(screenMeshRef);
+      }
+      camManager?.update(t);
+    } catch {}
   }
 
 
-  screenGlow.intensity = 3 + Math.sin(t * 1.8) * 0.4;
+  // Monitor-video stand-in shimmer (Henry's looping mp4s are gitignored/unavailable here).
+  screenGlow.intensity = 3 + Math.sin(t * 1.8) * 0.4 + Math.sin(t * 13.7) * 0.08 + Math.sin(t * 7.3) * 0.06;
 
   controls.update();
+  try { audioManager?.update(); } catch {} // office filter/vol follows camera, like original Yh.update()
   /* Overlay covers the canvas fullscreen: skip 3D work while it idles */
   const covered = desktopOpen && !camTween;
   if (!covered) {
